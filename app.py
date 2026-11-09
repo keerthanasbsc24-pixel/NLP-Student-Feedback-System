@@ -14,11 +14,13 @@ st.set_page_config(
 )
 
 # Load saved models
-category_model = joblib.load("saved_models/category_model.pkl")
-category_vectorizer = joblib.load("saved_models/category_vectorizer.pkl")
+category_model = joblib.load("category_model.pkl")
+category_vectorizer = joblib.load("category_vectorizer.pkl")
 
-sentiment_model = joblib.load("saved_models/sentiment_model.pkl")
-sentiment_vectorizer = joblib.load("saved_models/sentiment_vectorizer.pkl")
+sentiment_model = joblib.load("sentiment_model.pkl")
+sentiment_vectorizer = joblib.load("sentiment_vectorizer.pkl")
+
+stop_words = joblib.load("stop_words.pkl")
 
 # Text preprocessing
 def preprocess_text(text):
