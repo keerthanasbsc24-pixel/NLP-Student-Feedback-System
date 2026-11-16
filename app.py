@@ -3,30 +3,49 @@ import streamlit as st
 import pandas as pd
 import joblib
 import re
-import os
-import matplotlib.pyplot as plt
+from supabase import create_client
 
-# Page configuration
+# --------------------------------
+# PAGE CONFIGURATION
+# --------------------------------
+
 st.set_page_config(
     page_title="Student Feedback System",
     page_icon="🎓",
     layout="wide"
 )
 
-# Load saved models
+# --------------------------------
+# SUPABASE CONNECTION
+# --------------------------------
+
+@st.cache_resource
+def connect_supabase():
+    return create_client(
+        st.secrets["SUPABASE_URL"],
+        st.secrets["SUPABASE_KEY"]
+    )
+
+supabase = connect_supabase()
+# --------------------------------
+# LOAD ML MODELS
+# --------------------------------
+
 category_model = joblib.load("category_model.pkl")
 category_vectorizer = joblib.load("category_vectorizer.pkl")
 
 sentiment_model = joblib.load("sentiment_model.pkl")
 sentiment_vectorizer = joblib.load("sentiment_vectorizer.pkl")
 
-stop_words = joblib.load("stop_words.pkl")
+# --------------------------------
+# TEXT PREPROCESSING
+# --------------------------------
 
-# Text preprocessing
 def preprocess_text(text):
     text = str(text).lower()
     text = re.sub(r'http\S+|www\S+', '', text)
     text = re.sub(r'[^a-z\s]', ' ', text)
+
     words = text.split()
 
     stop_words = {
@@ -40,9 +59,23 @@ def preprocess_text(text):
         word for word in words if word not in stop_words
     )
 
+# --------------------------------
+# NORMALIZE FEEDBACK
+# --------------------------------
 
-# Prediction function
+def normalize_feedback(text):
+    text = str(text).lower()
+    text = re.sub(r'[^a-z0-9\s]', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+
+    return text
+
+# --------------------------------
+# PREDICTION FUNCTION
+# --------------------------------
+
 def predict_feedback(feedback):
+
     cleaned = preprocess_text(feedback)
 
     if not cleaned.strip():
@@ -56,13 +89,10 @@ def predict_feedback(feedback):
 
     return category, sentiment
 
+# --------------------------------
+# SIDEBAR NAVIGATION
+# --------------------------------
 
-# Session storage
-if "feedback_data" not in st.session_state:
-    st.session_state.feedback_data = []
-
-
-# Sidebar
 st.sidebar.title("🎓 Student Feedback System")
 
 page = st.sidebar.radio(
@@ -70,12 +100,18 @@ page = st.sidebar.radio(
     ["Student Dashboard", "Admin Dashboard"]
 )
 
-
+# ================================================
 # STUDENT DASHBOARD
+# ================================================
+
 if page == "Student Dashboard":
 
     st.title("🎓 Student Feedback Portal")
-    st.write("Share your feedback about our college.")
+
+    st.write(
+        "Share your feedback about our college. "
+        "Your identity will remain confidential."
+    )
 
     st.divider()
 
@@ -96,29 +132,136 @@ if page == "Student Dashboard":
             st.warning("Please enter your feedback.")
 
         else:
-            category, sentiment = predict_feedback(feedback)
 
-            record = {
-                "Student": student_name,
-                "Feedback": feedback,
-                "Category": category,
-                "Sentiment": sentiment
-            }
+            normalized = normalize_feedback(feedback)
 
-            st.session_state.feedback_data.append(record)
+            try:
 
-            st.success("Feedback submitted successfully!")
+                # Check duplicate feedback
 
-            col1, col2 = st.columns(2)
+                existing = (
+                    supabase.table("feedback")
+                    .select("id")
+                    .eq("normalized_feedback", normalized)
+                    .execute()
+                )
 
-            with col1:
-                st.metric("Predicted Category", category)
+                if existing.data:
 
-            with col2:
-                st.metric("Predicted Sentiment", sentiment)
+                    st.warning(
+                        "This feedback has already been submitted."
+                    )
 
+                else:
 
+                    category, sentiment = predict_feedback(feedback)
+
+                    if category == "Unable to classify":
+
+                        st.warning(
+                            "Please enter meaningful feedback."
+                        )
+
+                    else:
+
+                        # Save feedback permanently
+
+                        supabase.table("feedback").insert({
+                            "student_name": student_name.strip(),
+                            "feedback": feedback.strip(),
+                            "category": str(category),
+                            "sentiment": str(sentiment),
+                            "normalized_feedback": normalized
+                        }).execute()
+
+                        st.success(
+                            "Feedback submitted successfully!"
+                        )
+
+                        col1, col2 = st.columns(2)
+
+                        with col1:
+                            st.metric(
+                                "Predicted Category",
+                                category
+                            )
+
+                        with col2:
+                            st.metric(
+                                "Predicted Sentiment",
+                                sentiment
+                            )
+
+            except Exception as e:
+
+                error_message = str(e)
+
+                if (
+                    "23505" in error_message
+                    or "unique_normalized_feedback" in error_message
+                ):
+
+                    st.warning(
+                        "This feedback has already been submitted."
+                    )
+
+                else:
+
+                    st.error(
+                        "Unable to submit feedback. Please try again."
+                    )
+
+    # --------------------------------
+    # PUBLIC FEEDBACK LIST
+    # --------------------------------
+
+    st.divider()
+
+    st.subheader("📢 Student Feedback List")
+
+    st.write(
+        "Here you can view feedback submitted by students. "
+        "Student names are kept confidential."
+    )
+
+    try:
+
+        public_data = (
+            supabase.table("feedback")
+            .select("feedback, category, sentiment, created_at")
+            .order("created_at", desc=True)
+            .execute()
+        )
+
+        public_df = pd.DataFrame(public_data.data)
+
+        if not public_df.empty:
+
+            public_df = public_df.rename(columns={
+                "feedback": "Feedback",
+                "category": "Category",
+                "sentiment": "Sentiment",
+                "created_at": "Submitted On"
+            })
+
+            st.dataframe(
+                public_df,
+                use_container_width=True,
+                hide_index=True
+            )
+
+        else:
+
+            st.info("No feedback has been submitted yet.")
+
+    except Exception:
+
+        st.error("Unable to load student feedback.")
+
+# ================================================
 # ADMIN DASHBOARD
+# ================================================
+
 elif page == "Admin Dashboard":
 
     st.title("📊 Admin Dashboard")
@@ -128,62 +271,101 @@ elif page == "Admin Dashboard":
         type="password"
     )
 
-    if password == "admin123":
+    if password == st.secrets["ADMIN_PASSWORD"]:
 
         st.success("Admin login successful!")
 
-        data = pd.DataFrame(st.session_state.feedback_data)
+        try:
 
-        if not data.empty:
-
-            st.subheader("Feedback Statistics")
-
-            col1, col2, col3 = st.columns(3)
-
-            with col1:
-                st.metric("Total Feedback", len(data))
-
-            with col2:
-                st.metric(
-                    "Categories",
-                    data["Category"].nunique()
+            response = (
+                supabase.table("feedback")
+                .select(
+                    "student_name, feedback, category, sentiment, created_at"
                 )
-
-            with col3:
-                st.metric(
-                    "Positive Feedback",
-                    (data["Sentiment"] == "positive").sum()
-                )
-
-            st.divider()
-
-            st.subheader("Feedback Category Distribution")
-
-            category_counts = data["Category"].value_counts()
-
-            st.bar_chart(category_counts)
-
-            st.subheader("Sentiment Distribution")
-
-            sentiment_counts = data["Sentiment"].value_counts()
-
-            st.bar_chart(sentiment_counts)
-
-            st.subheader("All Student Feedback")
-
-            st.dataframe(data, use_container_width=True)
-
-            csv = data.to_csv(index=False).encode("utf-8")
-
-            st.download_button(
-                "Download Feedback Report",
-                data=csv,
-                file_name="student_feedback_report.csv",
-                mime="text/csv"
+                .order("created_at", desc=True)
+                .execute()
             )
 
-        else:
-            st.info("No student feedback has been submitted yet.")
+            data = pd.DataFrame(response.data)
+
+            if not data.empty:
+
+                st.subheader("Feedback Statistics")
+
+                col1, col2, col3 = st.columns(3)
+
+                with col1:
+                    st.metric(
+                        "Total Feedback",
+                        len(data)
+                    )
+
+                with col2:
+                    st.metric(
+                        "Categories",
+                        data["category"].nunique()
+                    )
+
+                with col3:
+                    st.metric(
+                        "Positive Feedback",
+                        (data["sentiment"].str.lower() == "positive").sum()
+                    )
+
+                st.divider()
+
+                st.subheader("Feedback Category Distribution")
+
+                category_counts = data["category"].value_counts()
+
+                st.bar_chart(category_counts)
+
+                st.subheader("Sentiment Distribution")
+
+                sentiment_counts = data["sentiment"].value_counts()
+
+                st.bar_chart(sentiment_counts)
+
+                st.divider()
+
+                st.subheader("All Student Feedback")
+
+                admin_df = data.rename(columns={
+                    "student_name": "Student Name",
+                    "feedback": "Feedback",
+                    "category": "Category",
+                    "sentiment": "Sentiment",
+                    "created_at": "Submitted On"
+                })
+
+                st.dataframe(
+                    admin_df,
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+                csv = admin_df.to_csv(index=False).encode("utf-8")
+
+                st.download_button(
+                    "Download Feedback Report",
+                    data=csv,
+                    file_name="student_feedback_report.csv",
+                    mime="text/csv"
+                )
+
+            else:
+
+                st.info(
+                    "No student feedback has been submitted yet."
+                )
+
+        except Exception:
+
+            st.error(
+                "Unable to load admin dashboard data. "
+                "Please check your database connection."
+            )
 
     else:
+
         st.info("Enter the admin password in the sidebar.")
