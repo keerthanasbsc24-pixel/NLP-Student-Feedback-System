@@ -27,6 +27,7 @@ def connect_supabase():
     )
 
 supabase = connect_supabase()
+
 # --------------------------------
 # LOAD ML MODELS
 # --------------------------------
@@ -135,81 +136,87 @@ if page == "Student Dashboard":
 
             normalized = normalize_feedback(feedback)
 
-            try:
+            if not normalized:
+                st.warning("Please enter meaningful feedback.")
 
-                # Check duplicate feedback
+            else:
 
-                existing = (
-                    supabase.table("feedback")
-                    .select("id")
-                    .eq("normalized_feedback", normalized)
-                    .execute()
-                )
+                try:
 
-                if existing.data:
+                    # Check duplicate feedback
 
-                    st.warning(
-                        "This feedback has already been submitted."
+                    existing = (
+                        supabase.table("feedback")
+                        .select("id")
+                        .eq("normalized_feedback", normalized)
+                        .execute()
                     )
 
-                else:
-
-                    category, sentiment = predict_feedback(feedback)
-
-                    if category == "Unable to classify":
+                    if existing.data:
 
                         st.warning(
-                            "Please enter meaningful feedback."
+                            "This feedback has already been submitted."
                         )
 
                     else:
 
-                        # Save feedback permanently
+                        category, sentiment = predict_feedback(feedback)
 
-                        supabase.table("feedback").insert({
-                            "student_name": student_name.strip(),
-                            "feedback": feedback.strip(),
-                            "category": str(category),
-                            "sentiment": str(sentiment),
-                            "normalized_feedback": normalized
-                        }).execute()
+                        if category == "Unable to classify":
 
-                        st.success(
-                            "Feedback submitted successfully!"
+                            st.warning(
+                                "Please enter meaningful feedback."
+                            )
+
+                        else:
+
+                            # Store feedback permanently
+
+                            supabase.table("feedback").insert({
+                                "student_name": student_name.strip(),
+                                "feedback": feedback.strip(),
+                                "category": str(category),
+                                "sentiment": str(sentiment),
+                                "normalized_feedback": normalized
+                            }).execute()
+
+                            st.success(
+                                "Feedback submitted successfully!"
+                            )
+
+                            col1, col2 = st.columns(2)
+
+                            with col1:
+                                st.metric(
+                                    "Predicted Category",
+                                    category
+                                )
+
+                            with col2:
+                                st.metric(
+                                    "Predicted Sentiment",
+                                    sentiment
+                                )
+
+                except Exception as e:
+
+                    error_message = str(e)
+
+                    if (
+                        "23505" in error_message
+                        or "unique_normalized_feedback" in error_message
+                    ):
+
+                        st.warning(
+                            "This feedback has already been submitted."
                         )
 
-                        col1, col2 = st.columns(2)
+                    else:
 
-                        with col1:
-                            st.metric(
-                                "Predicted Category",
-                                category
-                            )
-
-                        with col2:
-                            st.metric(
-                                "Predicted Sentiment",
-                                sentiment
-                            )
-
-            except Exception as e:
-
-                error_message = str(e)
-
-                if (
-                    "23505" in error_message
-                    or "unique_normalized_feedback" in error_message
-                ):
-
-                    st.warning(
-                        "This feedback has already been submitted."
-                    )
-
-                else:
-
-                    st.error(
-                        "Unable to submit feedback. Please try again."
-                    )
+                        st.error(
+                            f"Unable to submit feedback: "
+                            f"{type(e).__name__}: {e}"
+                        )
 
     # --------------------------------
     # PUBLIC FEEDBACK LIST
@@ -254,9 +261,12 @@ if page == "Student Dashboard":
 
             st.info("No feedback has been submitted yet.")
 
-    except Exception:
+    except Exception as e:
 
-        st.error("Unable to load student feedback.")
+        st.error(
+            f"Unable to load student feedback: "
+            f"{type(e).__name__}: {e}"
+        )
 
 # ================================================
 # ADMIN DASHBOARD
@@ -309,7 +319,10 @@ elif page == "Admin Dashboard":
                 with col3:
                     st.metric(
                         "Positive Feedback",
-                        (data["sentiment"].str.lower() == "positive").sum()
+                        (
+                            data["sentiment"].str.lower()
+                            == "positive"
+                        ).sum()
                     )
 
                 st.divider()
@@ -359,11 +372,11 @@ elif page == "Admin Dashboard":
                     "No student feedback has been submitted yet."
                 )
 
-        except Exception:
+        except Exception as e:
 
             st.error(
-                "Unable to load admin dashboard data. "
-                "Please check your database connection."
+                f"Unable to load admin dashboard: "
+                f"{type(e).__name__}: {e}"
             )
 
     else:
